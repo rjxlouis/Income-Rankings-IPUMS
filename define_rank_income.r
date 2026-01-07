@@ -3,6 +3,8 @@
 # ==============================================================================
 # This file contains all the core functions for data loading, preparation,
 # aggregation, and ranking
+#
+# Edited to suit utility in RDC, combined some elements from income_rank_main.R
 # ==============================================================================
 
 library(data.table)
@@ -10,6 +12,31 @@ library(ipumsr)
 library(progress)
 library(future)
 library(furrr)
+library(tidyverse)
+
+# ==============================================================================
+# GLOBALS 
+# ==============================================================================
+# Birth cohorts to analyze
+COHORT_RANGE <- c(1983:2000)
+
+# Age filters (keep ages ≤17 OR ≥24, exclude 18-23)
+AGE_FILTER_LOWER <- 17  # Children: age ≤ this
+AGE_FILTER_UPPER <- 24  # Adults: age ≥ this
+
+# Income interval for ranking (dollars)
+INTERVAL <- 100  # Percentile ranks computed at $100 increments
+
+# Income definitions to create
+INCOME_DEFINITIONS <- tibble(
+  name = c("xearn", "xemp", "xinc", "xcominc"),
+  formula = c(
+    "INCWAGE",
+    "INCWAGE + INCBUS00",
+    "INCTOT",
+    "INCWAGE + INCBUS00 + INCSS + INCRETIR + INCINVST"
+  )
+)
 
 # ==============================================================================
 # 1. DATA LOADING
@@ -65,9 +92,9 @@ code_missing_income <- function(dt) {
   dt[INCINVST == 999999, INCINVST := NA]
   dt[INCRETIR == 999999, INCRETIR := NA]
   dt[INCSS == 99999, INCSS := NA]
-  dt[INCSUPP == 99999, INCSUPP := NA]
-  dt[INCWELFR == 99999, INCWELFR := NA]
-  dt[INCOTHER %in% c(99999, 99998), INCOTHER := NA]
+  # dt[INCSUPP == 99999, INCSUPP := NA]
+  # dt[INCWELFR == 99999, INCWELFR := NA]
+  # dt[INCOTHER %in% c(99999, 99998), INCOTHER := NA]
   dt[INCTOT %in% c(9999999, 9999998), INCTOT := NA]
   return(dt)
 }
@@ -976,4 +1003,85 @@ process_all_years_parallel <- function(ipums_files, output_dir,
   cat("Summary saved to:", summary_file, "\n")
   
   return(results_list)
+}
+
+#' Create aggregations only
+#' 
+#' @param data original data containing columns for serial, pernum, family pointers, income, year etc.
+#' @param income_definitions Table with income definitions
+#' @param cohort_range Birth years to analyze
+#' @param age_filter_lower Lower age threshold
+#' @param age_filter_upper Upper age threshold
+#' @return data.table with appended columns for all aggregation-definition pairs
+#' 
+#' What it does:
+#' 1. Preps data and verifies presences of necessary columns
+#' 2. Applies aggregations and multiplies by income definitions
+#' 3. Returns original data with new appended columns for each aggregation-definition, linked by target ego
+append_income_aggregations <- function(data, income_definitions, 
+                                       cohort_range = 1983:2000,
+                                       age_filter_lower = 17, age_filter_upper = 24){
+  setDT(data)
+  
+  required_cols <- c("INCWAGE", "INCBUS00", "INCTOT", "INCSS", "INCRETIR", "INCINVST",
+                     "CBSERIAL", "CBPERNUM", "BIRTHYR", "AGE", "YEAR", "MARST", "RELATED",
+                     "FAMUNIT", "SPLOC", "MOMLOC", "POPLOC", "MOMLOC2", "POPLOC2", "PERWT")
+  
+  if (!all(required_cols %in% names(data))) {
+    missing <- setdiff(required_cols, names(data))
+    stop("Missing required columns: ", paste(missing, collapse = ", "))
+  }
+  
+  prepped_data <- prep_for_aggregation(data, cohort_range, income_definitions,
+                                       age_filter_lower, age_filter_upper, sample_n=NULL)
+  
+  agg_result <- apply_all_aggregations_optimized(prepped_data, income_definitions$name)
+  
+  egos <- agg_result$egos %>% select(starts_with("CB") | starts_with("x"))
+  
+  guardians <- agg_result$guardians %>% select(CBSERIAL, CBPERNUM, ego_PERNUM, starts_with("x"))
+  
+  # reshape
+  guardians[, pernum_seq := seq_len(.N), by = .(CBSERIAL, ego_PERNUM)]
+  
+  # Reshape wide
+  guardians_w <- dcast(guardians,
+                       CBSERIAL + ego_PERNUM ~ pernum_seq,
+                       value.var = c("CBPERNUM", "xearn_GUARDIAN", "xemp_GUARDIAN", "xinc_GUARDIAN", "xcominc_GUARDIAN"))
+  
+  # rename values
+  guardians_w %>% 
+    rename(CBPERNUM = ego_PERNUM,
+           GUARDIAN1 = CBPERNUM_1,
+           GUARDIAN2 = CBPERNUM_2) -> guardians_w
+  
+  married_guardians <- agg_result$married_guardians %>% select(CBSERIAL, CBPERNUM, ego_PERNUM, starts_with("x"))
+  
+  married_guardians[, pernum_seq := seq_len(.N), by = .(CBSERIAL, ego_PERNUM)]
+  
+  mguardians_w <- dcast(married_guardians,
+                        CBSERIAL + ego_PERNUM ~ pernum_seq,
+                        value.var = c("CBPERNUM", "xearn_MARRIED_GUARDIAN", "xemp_MARRIED_GUARDIAN", "xinc_MARRIED_GUARDIAN", "xcominc_MARRIED_GUARDIAN"))
+  
+  # rename values
+  mguardians_w %>% 
+    rename(CBPERNUM = ego_PERNUM,
+           MARRIED_GUARDIAN1 = CBPERNUM_1,
+           MARRIED_GUARDIAN2 = CBPERNUM_2) -> mguardians_w
+  
+  # join back to original data
+  result <- egos[data,
+                 on = .(CBSERIAL, CBPERNUM)]
+  
+  result <- guardians_w[result,
+                        on = .(CBSERIAL, CBPERNUM)]
+  
+  result <- mguardians_w[result,
+                         on = .(CBSERIAL, CBPERNUM)]
+  
+  cat(paste0(ncol(result)-ncol(data), " income columns appended:"), 
+      paste(setdiff(names(result), names(data)), 
+            collapse = ", "), "\n")
+  
+  return(result)
 }
