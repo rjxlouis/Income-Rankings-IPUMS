@@ -477,3 +477,56 @@ results <- run_production()
 
 # Correlation analysis:
 # cor_analysis <- create_correlation_analysis(2010)
+
+# ==============================================================================
+# COMBINE OUTPUT
+# ==============================================================================
+
+combine_csv_files <- function(folder_path, output_file, pattern = "\\.csv\\.gz$") {
+  
+  # Get all files
+  files <- list.files(folder_path, pattern = pattern, full.names = TRUE)
+  
+  if (length(files) == 0) {
+    stop("No files found matching pattern: ", pattern)
+  }
+  
+  cat("Found", length(files), "files to combine\n")
+  
+  # Process each file
+  for (i in seq_along(files)) {
+    cat(sprintf("[%d/%d] Processing: %s\n", i, length(files), basename(files[i])))
+    
+    # Extract year (last 4 digits before .csv.gz)
+    year <- sub(".*_(\\d{4})\\.csv\\.gz$", "\\1", basename(files[i]))
+    
+    # Read file
+    dt <- fread(files[i], showProgress = FALSE)
+    dt[, year := as.integer(year)]
+    
+    # Write (append after first file)
+    if (i == 1) {
+      fwrite(dt, output_file, compress = "gzip")
+    } else {
+      fwrite(dt, output_file, append = TRUE, compress = "gzip")
+    }
+    
+    # Clear memory
+    rm(dt)
+    gc()
+  }
+  
+  cat("Successfully combined", length(files), "files into:", output_file, "\n")
+  
+  # Return summary
+  return(data.table(
+    n_files = length(files),
+    output = output_file
+  ))
+}
+
+# Use it
+result <- combine_csv_files(
+  folder_path = '/Users/reneelouis/Library/CloudStorage/GoogleDrive-rlouis@stanford.edu/My Drive/Grad_Quarters/RAship/Code/Output',
+  output_file = '/Users/reneelouis/Library/CloudStorage/GoogleDrive-rlouis@stanford.edu/My Drive/Grad_Quarters/RAship/Code/Output/output.csv.gz'
+)
