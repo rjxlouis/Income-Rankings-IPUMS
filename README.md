@@ -6,7 +6,7 @@ This repository contains R scripts for calculating cohort-specific percentile ra
 
 ### Data Files
 Due to size constraints, all data files are hosted on Google Drive, accessed by this link here: (https://drive.google.com/drive/folders/1uX6SrZOd92giBvU1bnz5BRap8kRsHZBU?usp=sharing)
-- `output.csv.gz` - data file containing income-rank copula for 20 years
+- `output.zip` - compressed .csv file containing income-rank copula for 20 years
 
 ### R Scripts
 1. `define_rank_income.R` - Script containing all helper functions for program.
